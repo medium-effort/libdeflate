@@ -27,20 +27,19 @@
 
 #include "test_util.h"
 
-static const tchar *const optstring = T("Ahm:s:tZ");
+static const tchar *const optstring = T("Ahs:tZ");
 
 static void
 show_usage(FILE *fp)
 {
 	fprintf(fp,
-"Usage: %"TS" [-A] [-h] [-m ALIGN] [-s SIZE] [-t] [-Z] [FILE]...\n"
+"Usage: %"TS" [-A] [-h] [-s SIZE] [-t] [-Z] [FILE]...\n"
 "Calculate Adler-32 or CRC-32 checksums of the specified FILEs.\n"
 "\n"
 "Options:\n"
 "  -A        use Adler-32 (default is CRC-32)\n"
 "  -h        print this help\n"
-"  -m ALIGN  misalign the buffer by ALIGN bytes\n"
-"  -s SIZE   chunk size in bytes\n"
+"  -s SIZE   chunk size\n"
 "  -t        show checksum speed, excluding I/O\n"
 "  -Z        use zlib implementation instead of libdeflate\n",
 	prog_invocation_name);
@@ -108,9 +107,7 @@ tmain(int argc, tchar *argv[])
 	bool use_adler32 = false;
 	bool use_zlib_impl = false;
 	bool do_timing = false;
-	void *orig_buf = NULL;
 	void *buf;
-	size_t misalignment = 0;
 	size_t bufsize = 131072;
 	tchar *default_file_list[] = { NULL };
 	cksum_fn_t cksum;
@@ -128,16 +125,9 @@ tmain(int argc, tchar *argv[])
 		case 'h':
 			show_usage(stdout);
 			return 0;
-		case 'm':
-			misalignment = tstrtoul(toptarg, NULL, 10);
-			if (misalignment >= 4096) {
-				msg("invalid misalignment: \"%"TS"\"", toptarg);
-				return 1;
-			}
-			break;
 		case 's':
 			bufsize = tstrtoul(toptarg, NULL, 10);
-			if (bufsize == 0 || bufsize > SIZE_MAX / 2) {
+			if (bufsize == 0) {
 				msg("invalid chunk size: \"%"TS"\"", toptarg);
 				return 1;
 			}
@@ -169,10 +159,9 @@ tmain(int argc, tchar *argv[])
 			cksum = crc32_libdeflate;
 	}
 
-	orig_buf = xmalloc(bufsize + 4096 + misalignment);
-	if (orig_buf == NULL)
+	buf = xmalloc(bufsize);
+	if (buf == NULL)
 		return 1;
-	buf = (u8 *)orig_buf + (-(uintptr_t)orig_buf % 4096) + misalignment;
 
 	if (argc == 0) {
 		argv = default_file_list;
@@ -213,6 +202,6 @@ tmain(int argc, tchar *argv[])
 	}
 	ret = 0;
 out:
-	free(orig_buf);
+	free(buf);
 	return -ret;
 }

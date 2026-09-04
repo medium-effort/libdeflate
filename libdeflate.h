@@ -5,37 +5,57 @@
 #ifndef LIBDEFLATE_H
 #define LIBDEFLATE_H
 
-#include <stddef.h>
-#include <stdint.h>
-
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #define LIBDEFLATE_VERSION_MAJOR	1
-#define LIBDEFLATE_VERSION_MINOR	25
-#define LIBDEFLATE_VERSION_STRING	"1.25"
+#define LIBDEFLATE_VERSION_MINOR	8
+#define LIBDEFLATE_VERSION_STRING	"1.8"
+
+#include <stddef.h>
+#include <stdint.h>
 
 /*
- * Users of libdeflate.dll on Windows can define LIBDEFLATE_DLL to cause
- * __declspec(dllimport) to be used.  This should be done when it's easy to do.
- * Otherwise it's fine to skip it, since it is a very minor performance
- * optimization that is irrelevant for most use cases of libdeflate.
+ * On Windows, if you want to link to the DLL version of libdeflate, then
+ * #define LIBDEFLATE_DLL.  Note that the calling convention is "stdcall".
  */
-#ifndef LIBDEFLATEAPI
-#  if defined(LIBDEFLATE_DLL) && (defined(_WIN32) || defined(__CYGWIN__))
-#    define LIBDEFLATEAPI	__declspec(dllimport)
-#  else
-#    define LIBDEFLATEAPI
+#ifdef LIBDEFLATE_DLL
+#  ifdef BUILDING_LIBDEFLATE
+#    define LIBDEFLATEEXPORT	LIBEXPORT
+#  elif defined(_WIN32) || defined(__CYGWIN__)
+#    define LIBDEFLATEEXPORT	__declspec(dllimport)
 #  endif
 #endif
+#ifndef LIBDEFLATEEXPORT
+#  define LIBDEFLATEEXPORT
+#endif
+
+#if defined(_WIN32) && !defined(_WIN64)
+#  define LIBDEFLATEAPI_ABI	__stdcall
+#else
+#  define LIBDEFLATEAPI_ABI
+#endif
+
+#if defined(BUILDING_LIBDEFLATE) && defined(__GNUC__) && \
+	defined(_WIN32) && !defined(_WIN64)
+    /*
+     * On 32-bit Windows, gcc assumes 16-byte stack alignment but MSVC only 4.
+     * Realign the stack when entering libdeflate to avoid crashing in SSE/AVX
+     * code when called from an MSVC-compiled application.
+     */
+#  define LIBDEFLATEAPI_STACKALIGN	__attribute__((force_align_arg_pointer))
+#else
+#  define LIBDEFLATEAPI_STACKALIGN
+#endif
+
+#define LIBDEFLATEAPI	LIBDEFLATEAPI_ABI LIBDEFLATEAPI_STACKALIGN
 
 /* ========================================================================== */
 /*                             Compression                                    */
 /* ========================================================================== */
 
 struct libdeflate_compressor;
-struct libdeflate_options;
 
 /*
  * libdeflate_alloc_compressor() allocates a new compressor that supports
@@ -43,11 +63,10 @@ struct libdeflate_options;
  * level on a zlib-like scale but with a higher maximum value (1 = fastest, 6 =
  * medium/default, 9 = slow, 12 = slowest).  Level 0 is also supported and means
  * "no compression", specifically "create a valid stream, but only emit
- * uncompressed blocks" (this will expand the data slightly).  Level -1 is an
- * alias indicating a default level of 6.
+ * uncompressed blocks" (this will expand the data slightly).
  *
  * The return value is a pointer to the new compressor, or NULL if out of memory
- * or if the compression level is invalid (i.e. outside the range [-1, 12]).
+ * or if the compression level is invalid (i.e. outside the range [0, 12]).
  *
  * Note: for compression, the sliding window size is defined at compilation time
  * to 32768, the largest size permissible in the DEFLATE format.  It cannot be
@@ -56,33 +75,17 @@ struct libdeflate_options;
  * A single compressor is not safe to use by multiple threads concurrently.
  * However, different threads may use different compressors concurrently.
  */
-LIBDEFLATEAPI struct libdeflate_compressor *
+LIBDEFLATEEXPORT struct libdeflate_compressor * LIBDEFLATEAPI
 libdeflate_alloc_compressor(int compression_level);
 
 /*
- * Like libdeflate_alloc_compressor(), but adds the 'options' argument.
- */
-LIBDEFLATEAPI struct libdeflate_compressor *
-libdeflate_alloc_compressor_ex(int compression_level,
-			       const struct libdeflate_options *options);
-
-/*
  * libdeflate_deflate_compress() performs raw DEFLATE compression on a buffer of
- * data.  It attempts to compress 'in_nbytes' bytes of data located at 'in' and
- * write the result to 'out', which has space for 'out_nbytes_avail' bytes.  The
- * return value is the compressed size in bytes, or 0 if the data could not be
- * compressed to 'out_nbytes_avail' bytes or fewer.
- *
- * If compression is successful, then the output data is guaranteed to be a
- * valid DEFLATE stream that decompresses to the input data.  No other
- * guarantees are made about the output data.  Notably, different versions of
- * libdeflate can produce different compressed data for the same uncompressed
- * data, even at the same compression level.  Do ***NOT*** do things like
- * writing tests that compare compressed data to a golden output, as this can
- * break when libdeflate is updated.  (This property isn't specific to
- * libdeflate; the same is true for zlib and other compression libraries too.)
+ * data.  The function attempts to compress 'in_nbytes' bytes of data located at
+ * 'in' and write the results to 'out', which has space for 'out_nbytes_avail'
+ * bytes.  The return value is the compressed size in bytes, or 0 if the data
+ * could not be compressed to 'out_nbytes_avail' bytes or fewer.
  */
-LIBDEFLATEAPI size_t
+LIBDEFLATEEXPORT size_t LIBDEFLATEAPI
 libdeflate_deflate_compress(struct libdeflate_compressor *compressor,
 			    const void *in, size_t in_nbytes,
 			    void *out, size_t out_nbytes_avail);
@@ -91,10 +94,11 @@ libdeflate_deflate_compress(struct libdeflate_compressor *compressor,
  * libdeflate_deflate_compress_bound() returns a worst-case upper bound on the
  * number of bytes of compressed data that may be produced by compressing any
  * buffer of length less than or equal to 'in_nbytes' using
- * libdeflate_deflate_compress() with the specified compressor.  This bound will
- * necessarily be a number greater than or equal to 'in_nbytes'.  It may be an
- * overestimate of the true upper bound.  The return value is guaranteed to be
- * the same for all invocations with the same compressor and same 'in_nbytes'.
+ * libdeflate_deflate_compress() with the specified compressor.  Mathematically,
+ * this bound will necessarily be a number greater than or equal to 'in_nbytes'.
+ * It may be an overestimate of the true upper bound.  The return value is
+ * guaranteed to be the same for all invocations with the same compressor and
+ * same 'in_nbytes'.
  *
  * As a special case, 'compressor' may be NULL.  This causes the bound to be
  * taken across *any* libdeflate_compressor that could ever be allocated with
@@ -111,15 +115,15 @@ libdeflate_deflate_compress(struct libdeflate_compressor *compressor,
  * libdeflate_deflate_compress() returns 0, indicating that the compressed data
  * did not fit into the provided output buffer.
  */
-LIBDEFLATEAPI size_t
+LIBDEFLATEEXPORT size_t LIBDEFLATEAPI
 libdeflate_deflate_compress_bound(struct libdeflate_compressor *compressor,
 				  size_t in_nbytes);
 
 /*
- * Like libdeflate_deflate_compress(), but uses the zlib wrapper format instead
- * of raw DEFLATE.
+ * Like libdeflate_deflate_compress(), but stores the data in the zlib wrapper
+ * format.
  */
-LIBDEFLATEAPI size_t
+LIBDEFLATEEXPORT size_t LIBDEFLATEAPI
 libdeflate_zlib_compress(struct libdeflate_compressor *compressor,
 			 const void *in, size_t in_nbytes,
 			 void *out, size_t out_nbytes_avail);
@@ -129,15 +133,15 @@ libdeflate_zlib_compress(struct libdeflate_compressor *compressor,
  * compressed with libdeflate_zlib_compress() rather than with
  * libdeflate_deflate_compress().
  */
-LIBDEFLATEAPI size_t
+LIBDEFLATEEXPORT size_t LIBDEFLATEAPI
 libdeflate_zlib_compress_bound(struct libdeflate_compressor *compressor,
 			       size_t in_nbytes);
 
 /*
- * Like libdeflate_deflate_compress(), but uses the gzip wrapper format instead
- * of raw DEFLATE.
+ * Like libdeflate_deflate_compress(), but stores the data in the gzip wrapper
+ * format.
  */
-LIBDEFLATEAPI size_t
+LIBDEFLATEEXPORT size_t LIBDEFLATEAPI
 libdeflate_gzip_compress(struct libdeflate_compressor *compressor,
 			 const void *in, size_t in_nbytes,
 			 void *out, size_t out_nbytes_avail);
@@ -147,7 +151,7 @@ libdeflate_gzip_compress(struct libdeflate_compressor *compressor,
  * compressed with libdeflate_gzip_compress() rather than with
  * libdeflate_deflate_compress().
  */
-LIBDEFLATEAPI size_t
+LIBDEFLATEEXPORT size_t LIBDEFLATEAPI
 libdeflate_gzip_compress_bound(struct libdeflate_compressor *compressor,
 			       size_t in_nbytes);
 
@@ -156,7 +160,7 @@ libdeflate_gzip_compress_bound(struct libdeflate_compressor *compressor,
  * libdeflate_alloc_compressor().  If a NULL pointer is passed in, no action is
  * taken.
  */
-LIBDEFLATEAPI void
+LIBDEFLATEEXPORT void LIBDEFLATEAPI
 libdeflate_free_compressor(struct libdeflate_compressor *compressor);
 
 /* ========================================================================== */
@@ -164,7 +168,6 @@ libdeflate_free_compressor(struct libdeflate_compressor *compressor);
 /* ========================================================================== */
 
 struct libdeflate_decompressor;
-struct libdeflate_options;
 
 /*
  * libdeflate_alloc_decompressor() allocates a new decompressor that can be used
@@ -178,14 +181,8 @@ struct libdeflate_options;
  * A single decompressor is not safe to use by multiple threads concurrently.
  * However, different threads may use different decompressors concurrently.
  */
-LIBDEFLATEAPI struct libdeflate_decompressor *
+LIBDEFLATEEXPORT struct libdeflate_decompressor * LIBDEFLATEAPI
 libdeflate_alloc_decompressor(void);
-
-/*
- * Like libdeflate_alloc_decompressor(), but adds the 'options' argument.
- */
-LIBDEFLATEAPI struct libdeflate_decompressor *
-libdeflate_alloc_decompressor_ex(const struct libdeflate_options *options);
 
 /*
  * Result of a call to libdeflate_deflate_decompress(),
@@ -195,8 +192,8 @@ enum libdeflate_result {
 	/* Decompression was successful.  */
 	LIBDEFLATE_SUCCESS = 0,
 
-	/* Decompression failed because the compressed data was invalid,
-	 * corrupt, or otherwise unsupported.  */
+	/* Decompressed failed because the compressed data was invalid, corrupt,
+	 * or otherwise unsupported.  */
 	LIBDEFLATE_BAD_DATA = 1,
 
 	/* A NULL 'actual_out_nbytes_ret' was provided, but the data would have
@@ -209,12 +206,13 @@ enum libdeflate_result {
 };
 
 /*
- * libdeflate_deflate_decompress() decompresses a DEFLATE stream from the buffer
- * 'in' with compressed size up to 'in_nbytes' bytes.  The uncompressed data is
- * written to 'out', a buffer with size 'out_nbytes_avail' bytes.  If
- * decompression succeeds, then 0 (LIBDEFLATE_SUCCESS) is returned.  Otherwise,
- * a nonzero result code such as LIBDEFLATE_BAD_DATA is returned, and the
- * contents of the output buffer are undefined.
+ * libdeflate_deflate_decompress() decompresses the DEFLATE-compressed stream
+ * from the buffer 'in' with compressed size up to 'in_nbytes' bytes.  The
+ * uncompressed data is written to 'out', a buffer with size 'out_nbytes_avail'
+ * bytes.  If decompression succeeds, then 0 (LIBDEFLATE_SUCCESS) is returned.
+ * Otherwise, a nonzero result code such as LIBDEFLATE_BAD_DATA is returned.  If
+ * a nonzero result code is returned, then the contents of the output buffer are
+ * undefined.
  *
  * Decompression stops at the end of the DEFLATE stream (as indicated by the
  * BFINAL flag), even if it is actually shorter than 'in_nbytes' bytes.
@@ -239,7 +237,7 @@ enum libdeflate_result {
  *     not large enough but no other problems were encountered, or another
  *     nonzero result code if decompression failed for another reason.
  */
-LIBDEFLATEAPI enum libdeflate_result
+LIBDEFLATEEXPORT enum libdeflate_result LIBDEFLATEAPI
 libdeflate_deflate_decompress(struct libdeflate_decompressor *decompressor,
 			      const void *in, size_t in_nbytes,
 			      void *out, size_t out_nbytes_avail,
@@ -251,7 +249,7 @@ libdeflate_deflate_decompress(struct libdeflate_decompressor *decompressor,
  * then the actual compressed size of the DEFLATE stream (aligned to the next
  * byte boundary) is written to *actual_in_nbytes_ret.
  */
-LIBDEFLATEAPI enum libdeflate_result
+LIBDEFLATEEXPORT enum libdeflate_result LIBDEFLATEAPI
 libdeflate_deflate_decompress_ex(struct libdeflate_decompressor *decompressor,
 				 const void *in, size_t in_nbytes,
 				 void *out, size_t out_nbytes_avail,
@@ -266,7 +264,7 @@ libdeflate_deflate_decompress_ex(struct libdeflate_decompressor *decompressor,
  * than 'in_nbytes'.  If you need to know exactly where the zlib stream ended,
  * use libdeflate_zlib_decompress_ex().
  */
-LIBDEFLATEAPI enum libdeflate_result
+LIBDEFLATEEXPORT enum libdeflate_result LIBDEFLATEAPI
 libdeflate_zlib_decompress(struct libdeflate_decompressor *decompressor,
 			   const void *in, size_t in_nbytes,
 			   void *out, size_t out_nbytes_avail,
@@ -279,7 +277,7 @@ libdeflate_zlib_decompress(struct libdeflate_decompressor *decompressor,
  * buffer was decompressed), then the actual number of input bytes consumed is
  * written to *actual_in_nbytes_ret.
  */
-LIBDEFLATEAPI enum libdeflate_result
+LIBDEFLATEEXPORT enum libdeflate_result LIBDEFLATEAPI
 libdeflate_zlib_decompress_ex(struct libdeflate_decompressor *decompressor,
 			      const void *in, size_t in_nbytes,
 			      void *out, size_t out_nbytes_avail,
@@ -294,7 +292,7 @@ libdeflate_zlib_decompress_ex(struct libdeflate_decompressor *decompressor,
  * will be decompressed.  Use libdeflate_gzip_decompress_ex() if you need
  * multi-member support.
  */
-LIBDEFLATEAPI enum libdeflate_result
+LIBDEFLATEEXPORT enum libdeflate_result LIBDEFLATEAPI
 libdeflate_gzip_decompress(struct libdeflate_decompressor *decompressor,
 			   const void *in, size_t in_nbytes,
 			   void *out, size_t out_nbytes_avail,
@@ -307,7 +305,7 @@ libdeflate_gzip_decompress(struct libdeflate_decompressor *decompressor,
  * buffer was decompressed), then the actual number of input bytes consumed is
  * written to *actual_in_nbytes_ret.
  */
-LIBDEFLATEAPI enum libdeflate_result
+LIBDEFLATEEXPORT enum libdeflate_result LIBDEFLATEAPI
 libdeflate_gzip_decompress_ex(struct libdeflate_decompressor *decompressor,
 			      const void *in, size_t in_nbytes,
 			      void *out, size_t out_nbytes_avail,
@@ -319,7 +317,7 @@ libdeflate_gzip_decompress_ex(struct libdeflate_decompressor *decompressor,
  * libdeflate_alloc_decompressor().  If a NULL pointer is passed in, no action
  * is taken.
  */
-LIBDEFLATEAPI void
+LIBDEFLATEEXPORT void LIBDEFLATEAPI
 libdeflate_free_decompressor(struct libdeflate_decompressor *decompressor);
 
 /* ========================================================================== */
@@ -332,7 +330,7 @@ libdeflate_free_decompressor(struct libdeflate_decompressor *decompressor);
  * required initial value for 'adler' is 1.  This value is also returned when
  * 'buffer' is specified as NULL.
  */
-LIBDEFLATEAPI uint32_t
+LIBDEFLATEEXPORT uint32_t LIBDEFLATEAPI
 libdeflate_adler32(uint32_t adler, const void *buffer, size_t len);
 
 
@@ -342,7 +340,7 @@ libdeflate_adler32(uint32_t adler, const void *buffer, size_t len);
  * initial value for 'crc' is 0.  This value is also returned when 'buffer' is
  * specified as NULL.
  */
-LIBDEFLATEAPI uint32_t
+LIBDEFLATEEXPORT uint32_t LIBDEFLATEAPI
 libdeflate_crc32(uint32_t crc, const void *buffer, size_t len);
 
 /* ========================================================================== */
@@ -351,59 +349,189 @@ libdeflate_crc32(uint32_t crc, const void *buffer, size_t len);
 
 /*
  * Install a custom memory allocator which libdeflate will use for all memory
- * allocations by default.  'malloc_func' is a function that must behave like
- * malloc(), and 'free_func' is a function that must behave like free().
+ * allocations.  'malloc_func' is a function that must behave like malloc(), and
+ * 'free_func' is a function that must behave like free().
  *
- * The per-(de)compressor custom memory allocator that can be specified in
- * 'struct libdeflate_options' takes priority over this.
- *
- * This doesn't affect the free() function that will be used to free
- * (de)compressors that were already in existence when this is called.
+ * There must not be any libdeflate_compressor or libdeflate_decompressor
+ * structures in existence when calling this function.
  */
-LIBDEFLATEAPI void
+LIBDEFLATEEXPORT void LIBDEFLATEAPI
 libdeflate_set_memory_allocator(void *(*malloc_func)(size_t),
 				void (*free_func)(void *));
 
-/*
- * Advanced options.  This is the options structure that
- * libdeflate_alloc_compressor_ex() and libdeflate_alloc_decompressor_ex()
- * require.  Most users won't need this and should just use the non-"_ex"
- * functions instead.  If you do need this, it should be initialized like this:
- *
- *	struct libdeflate_options options;
- *
- *	memset(&options, 0, sizeof(options));
- *	options.sizeof_options = sizeof(options);
- *	// Then set the fields that you need to override the defaults for.
- */
-struct libdeflate_options {
+/* ========================================================================== */
+/*                       NVIDIA GDEFLATE-related API                          */
+/* ========================================================================== */
 
-	/*
-	 * This field must be set to the struct size.  This field exists for
-	 * extensibility, so that fields can be appended to this struct in
-	 * future versions of libdeflate while still supporting old binaries.
-	 */
-	size_t sizeof_options;
+/* ========================================================================== */
+/*                             Compression                                    */
+/* ========================================================================== */
 
-	/*
-	 * An optional custom memory allocator to use for this (de)compressor.
-	 * 'malloc_func' must be a function that behaves like malloc(), and
-	 * 'free_func' must be a function that behaves like free().
-	 *
-	 * This is useful in cases where a process might have multiple users of
-	 * libdeflate who want to use different memory allocators.  For example,
-	 * a library might want to use libdeflate with a custom memory allocator
-	 * without interfering with user code that might use libdeflate too.
-	 *
-	 * This takes priority over the "global" memory allocator (which by
-	 * default is malloc() and free(), but can be changed by
-	 * libdeflate_set_memory_allocator()).  Moreover, libdeflate will never
-	 * call the "global" memory allocator if a per-(de)compressor custom
-	 * allocator is always given.
+struct libdeflate_gdeflate_compressor;
+
+struct libdeflate_gdeflate_out_page {
+	/* Buffer for compressed GDEFLATE page data. */
+	void *data;
+	/* Buffer size in bytes. If compression succeeded this field will
+	 * contain the size of compressed GDEFLATE page.
 	 */
-	void *(*malloc_func)(size_t);
-	void (*free_func)(void *);
+	size_t nbytes;
 };
+
+struct libdeflate_gdeflate_in_page {
+	/* Compressed GDEFLATE page data. */
+	const void* data;
+	/* Size in bytes of compressed GDEFLATE page. */
+	size_t nbytes;
+};
+
+/*
+ * libdeflate_alloc_gdeflate_compressor() allocates a new compressor that
+ * supports GDEFLATE compression.  'compression_level' is the compression
+ * level on a zlib-like scale but with a higher maximum value (1 = fastest, 6 =
+ * medium/default, 9 = slow, 12 = slowest).  Level 0 is also supported and means
+ * "no compression", specifically "create a valid stream, but only emit
+ * uncompressed blocks" (this will expand the data slightly).
+ *
+ * The return value is a pointer to the new compressor, or NULL if out of memory
+ * or if the compression level is invalid (i.e. outside the range [0, 12]).
+ *
+ * Note: for compression, the sliding window size is defined at compilation time
+ * to 65536, the largest size permissible in the GDEFLATE format.  It cannot be
+ * changed at runtime.
+ *
+ * A single compressor is not safe to use by multiple threads concurrently.
+ * However, different threads may use different compressors concurrently.
+ */
+LIBDEFLATEEXPORT struct libdeflate_gdeflate_compressor * LIBDEFLATEAPI
+libdeflate_alloc_gdeflate_compressor(int compression_level);
+
+/*
+ * libdeflate_gdeflate_compress() performs raw GDEFLATE compression on a buffer
+ * of data.  The function attempts to compress 'in_nbytes' bytes of data located
+ * at 'in' and writes page results to 'out_pages', which has preallocated 'data'
+ * with 'nbytes' space for each page.  To determine the number of pages
+ * 'out_npages' the input data will be split into and the upper bound on
+ * compressed data use the libdeflate_gdeflate_compress_bound() function.  The
+ * return value is the compressed size in bytes, or 0 if the data could not be
+ * compressed.  If compression succeeded the size of each compressed page will
+ * be written to 'nbytes' field of 'out_pages'.
+ */
+LIBDEFLATEEXPORT size_t LIBDEFLATEAPI
+libdeflate_gdeflate_compress(struct libdeflate_gdeflate_compressor *compressor,
+			     const void *in, size_t in_nbytes,
+			     struct libdeflate_gdeflate_out_page *out_pages,
+			     size_t out_npages);
+
+/*
+ * libdeflate_gdeflate_compress_ex() performs raw GDEFLATE compression on
+ * set of pages.  The function attempts to compress 'npages' from 'in_pages'
+ * and writes page results to 'out_pages', which has preallocated 'data'
+ * with 'nbytes' space for each page.  To determine the number of pages
+ * 'out_npages' the input data will be split into and the upper bound on
+ * compressed data use the libdeflate_gdeflate_compress_bound() function.  The
+ * return value is the number of processed pages.  If compression succeeded
+ * the size of each compressed page will be written to 'nbytes' field of 'out_pages'.
+ */
+LIBDEFLATEEXPORT size_t LIBDEFLATEAPI
+libdeflate_gdeflate_compress_ex(struct libdeflate_gdeflate_compressor *compressor,
+				const struct libdeflate_gdeflate_in_page* in_pages,
+				struct libdeflate_gdeflate_out_page* out_pages, size_t npages);
+
+/*
+ * libdeflate_gdeflate_compress_bound() returns a worst-case upper bound on the
+ * number of bytes of compressed data that may be produced by compressing any
+ * buffer of length less than or equal to 'in_nbytes' using
+ * libdeflate_gdeflate_compress() with the specified compressor.  Mathematically,
+ * this bound will necessarily be a number greater than or equal to 'in_nbytes'.
+ * It may be an overestimate of the true upper bound.  The return value is
+ * guaranteed to be the same for all invocations with the same compressor and
+ * same 'in_nbytes'. The 'out_npages' will contain the number of GDEFLATE pages
+ * the input data will be split into.  This number should be used to preallocate
+ * the page array for libdeflate_gdeflate_compress().  The upper bound on the
+ * number of compressed data in a page can be found by dividing the function
+ * result by the 'out_npages' value.
+ *
+ * As a special case, 'compressor' may be NULL.  This causes the bound to be
+ * taken across *any* libdeflate_compressor that could ever be allocated with
+ * this build of the library, with any options.
+ */
+LIBDEFLATEEXPORT size_t LIBDEFLATEAPI
+libdeflate_gdeflate_compress_bound(struct libdeflate_gdeflate_compressor *comp,
+				   size_t in_nbytes, size_t *out_npages);
+
+/*
+ * libdeflate_free_gdeflate_compressor() frees a compressor that was allocated
+ * with libdeflate_alloc_gdeflate_compressor().  If a NULL pointer is passed in,
+ * no action is taken.
+ */
+LIBDEFLATEEXPORT void LIBDEFLATEAPI
+libdeflate_free_gdeflate_compressor(struct libdeflate_gdeflate_compressor *comp);
+
+/* ========================================================================== */
+/*                             Decompression                                  */
+/* ========================================================================== */
+
+struct libdeflate_gdeflate_decompressor;
+
+/*
+ * libdeflate_alloc_gdeflate_decompressor() allocates a new decompressor that
+ * can be used for GDEFLATE decompression.  The return value is a pointer to
+ * the new decompressor, or NULL if out of memory.
+ *
+ * This function takes no parameters, and the returned decompressor is valid for
+ * decompressing data that was compressed at any compression level and with any
+ * sliding window size.
+ *
+ * A single decompressor is not safe to use by multiple threads concurrently.
+ * However, different threads may use different decompressors concurrently.
+ */
+LIBDEFLATEEXPORT struct libdeflate_gdeflate_decompressor * LIBDEFLATEAPI
+libdeflate_alloc_gdeflate_decompressor(void);
+
+/*
+ * libdeflate_gdeflate_decompress() decompresses the GDEFLATE-compressed pages
+ * from the 'in_pages' array with 'in_npages' members.  The uncompressed data is
+ * written to 'out', a buffer with size 'out_nbytes_avail' bytes.
+ * If decompression succeeds, then 0 (LIBDEFLATE_SUCCESS) is returned.
+ * Otherwise, a nonzero result code such as LIBDEFLATE_BAD_DATA is returned.  If
+ * a nonzero result code is returned, then the contents of the output buffer are
+ * undefined.
+ *
+ * libdeflate_gdeflate_decompress() can be used only in cases where the actual
+ * uncompressed size is known.
+ */
+LIBDEFLATEEXPORT enum libdeflate_result LIBDEFLATEAPI
+libdeflate_gdeflate_decompress(struct libdeflate_gdeflate_decompressor *decomp,
+			       struct libdeflate_gdeflate_in_page *in_pages,
+			       size_t in_npages, void *out,
+			       size_t out_nbytes_avail,
+			       size_t *actual_out_nbytes_ret);
+
+/*
+ * libdeflate_gdeflate_decompress_ex() decompresses the GDEFLATE-compressed pages
+ * from the 'in_pages' array with 'npages' members.  The uncompressed data is
+ * written to 'out_pages'.
+ * If decompression succeeds, then 0 (LIBDEFLATE_SUCCESS) is returned.
+ * Otherwise, a nonzero result code such as LIBDEFLATE_BAD_DATA is returned.  If
+ * a nonzero result code is returned, then the contents of the output buffer are
+ * undefined.
+ *
+ * libdeflate_gdeflate_decompress_ex() can be used only in cases where the actual
+ * uncompressed size is known.
+ */
+LIBDEFLATEEXPORT enum libdeflate_result LIBDEFLATEAPI
+libdeflate_gdeflate_decompress_ex(struct libdeflate_gdeflate_decompressor *decomp,
+				  struct libdeflate_gdeflate_in_page *in_pages,
+				  struct libdeflate_gdeflate_out_page* out_pages, size_t npages);
+
+/*
+ * libdeflate_free_gdeflate_decompressor() frees a decompressor that was
+ * allocated with libdeflate_alloc_gdeflate_decompressor().  If a NULL pointer
+ * is passed in, no action is taken.
+ */
+LIBDEFLATEEXPORT void LIBDEFLATEAPI
+libdeflate_free_gdeflate_decompressor(struct libdeflate_gdeflate_decompressor *decomp);
 
 #ifdef __cplusplus
 }

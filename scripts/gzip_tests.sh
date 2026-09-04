@@ -15,14 +15,8 @@ set -eu -o pipefail
 
 export -n GZIP GUNZIP TESTDATA
 
-ORIG_PWD=$PWD
 TMPDIR="$(mktemp -d)"
 CURRENT_TEST=
-
-BSD_STAT=false
-if ! stat --version 2>&1 | grep -q coreutils; then
-	BSD_STAT=true
-fi
 
 cleanup() {
 	if [ -n "$CURRENT_TEST" ]; then
@@ -33,13 +27,13 @@ cleanup() {
 
 trap cleanup EXIT
 
+TESTDATA="$(readlink -f "$TESTDATA")"
+cd "$TMPDIR"
+
 begin_test() {
 	CURRENT_TEST="$1"
 	rm -rf -- "${TMPDIR:?}"/*
-	cd "$ORIG_PWD"
-	cp "$TESTDATA" "$TMPDIR/file"
-	chmod +w "$TMPDIR/file"
-	cd "$TMPDIR"
+	cp "$TESTDATA" file
 }
 
 gzip() {
@@ -48,40 +42,6 @@ gzip() {
 
 gunzip() {
 	$GUNZIP "$@"
-}
-
-get_filesize() {
-	local file=$1
-
-	if $BSD_STAT; then
-		stat -f %z "$file"
-	else
-		stat -c %s "$file"
-	fi
-}
-
-get_linkcount() {
-	local file=$1
-
-	if $BSD_STAT; then
-		stat -f %l "$file"
-	else
-		stat -c %h "$file"
-	fi
-}
-
-get_modeandtimestamps() {
-	local file=$1
-
-	if $BSD_STAT; then
-		stat -f "%p;%a;%m" "$file"
-	elif [ "$(uname -m)" = s390x ]; then
-		# Use seconds precision instead of nanoseconds.
-		# TODO: why is this needed?  QEMU user mode emulation bug?
-		stat -c "%a;%X;%Y" "$file"
-	else
-		stat -c "%a;%x;%y" "$file"
-	fi
 }
 
 assert_status() {
@@ -133,6 +93,26 @@ assert_equals() {
 	fi
 }
 
+# Get the filesystem type.
+FSTYPE=$(df -T . | tail -1 | awk '{print $2}')
+
+# If gzip or gunzip is the GNU version, require that it supports the '-k'
+# option.  This option was added in v1.6, released in 2013.
+check_version_prereq() {
+	local prog=$1
+
+	if ! echo | { $prog -k || true; } |& grep -q 'invalid option'; then
+		return 0
+	fi
+	if ! $prog -V |& grep -q 'Free Software Foundation'; then
+		echo 1>&2 "Unexpected case: not GNU $prog, but -k option is invalid"
+		exit 1
+	fi
+	echo "GNU $prog is too old; skipping gzip/gunzip tests"
+	exit 0
+}
+check_version_prereq gzip
+check_version_prereq gunzip
 
 begin_test 'Basic compression and decompression works'
 cp file orig
@@ -198,7 +178,7 @@ gunzip -kfd file.gz
 
 
 begin_test 'Compression levels'
-if [ "$GZIP" = /bin/gzip ] || [ "$GZIP" = /usr/bin/gzip ]; then
+if [ "$GZIP" = /bin/gzip ]; then
 	assert_error '\<invalid option\>' gzip -10
 	max_level=9
 else
@@ -242,21 +222,6 @@ gzip file.gz 2>&1 >/dev/null | grep -q 'already has .gz suffix'
 gzip -f file.gz
 [ ! -e file.gz ] && [ -e file.gz.gz ]
 cmp file.gz.gz c.gz
-
-
-begin_test 'gunzip -f -c passes through non-gzip data'
-echo hello > file
-cp file orig
-gunzip -f -c file > foo
-cmp file foo
-gzip file
-gunzip -f -c file.gz > foo
-cmp foo orig
-
-
-begin_test 'gunzip -f (without -c) does *not* pass through non-gzip data'
-echo hello > file.gz
-assert_error '\<not in gzip format\>' gunzip -f file.gz
 
 
 begin_test 'Decompressing unsuffixed file only works with -c'
@@ -352,13 +317,13 @@ cmp <(echo b) b
 begin_test '(gzip) hard linked file skipped without -f or -c'
 cp file orig
 ln file link
-assert_equals 2 "$(get_linkcount file)"
+assert_equals 2 "$(stat -c %h file)"
 assert_skipped gzip file
 gzip -c file > /dev/null
-assert_equals 2 "$(get_linkcount file)"
+assert_equals 2 "$(stat -c %h file)"
 gzip -f file
-assert_equals 1 "$(get_linkcount link)"
-assert_equals 1 "$(get_linkcount file.gz)"
+assert_equals 1 "$(stat -c %h link)"
+assert_equals 1 "$(stat -c %h file.gz)"
 cmp link orig
 # XXX: GNU gzip skips hard linked files with -k, libdeflate's doesn't
 
@@ -367,13 +332,13 @@ begin_test '(gunzip) hard linked file skipped without -f or -c'
 gzip file
 ln file.gz link.gz
 cp file.gz orig.gz
-assert_equals 2 "$(get_linkcount file.gz)"
+assert_equals 2 "$(stat -c %h file.gz)"
 assert_skipped gunzip file.gz
 gunzip -c file.gz > /dev/null
-assert_equals 2 "$(get_linkcount file.gz)"
+assert_equals 2 "$(stat -c %h file.gz)"
 gunzip -f file
-assert_equals 1 "$(get_linkcount link.gz)"
-assert_equals 1 "$(get_linkcount file)"
+assert_equals 1 "$(stat -c %h link.gz)"
+assert_equals 1 "$(stat -c %h file)"
 cmp link.gz orig.gz
 
 
@@ -452,12 +417,20 @@ assert_error '\<invalid suffix\>' gunzip -S '""' file
 
 
 begin_test 'Timestamps and mode are preserved'
+if [ "$FSTYPE" = shiftfs ]; then
+	# In Travis CI, the filesystem (shiftfs) only supports seconds precision
+	# timestamps.  Nanosecond precision still sometimes seems to work,
+	# probably due to caching, but it is unreliable.
+	format='%a;%X;%Y'
+else
+	format='%a;%x;%y'
+fi
 chmod 777 file
-orig_stat=$(get_modeandtimestamps file)
+orig_stat="$(stat -c "$format" file)"
 gzip file
 sleep 1
 gunzip file.gz
-assert_equals "$orig_stat" "$(get_modeandtimestamps file)"
+assert_equals "$orig_stat" "$(stat -c "$format" file)"
 
 
 begin_test 'Decompressing multi-member gzip file'
@@ -508,12 +481,6 @@ for contents in "${bad_files[@]}"; do
 	assert_error '\<invalid compressed data|file corrupt|unexpected end of file|Out of memory\>' \
 		gzip -t file
 done
-
-
-begin_test '-q (quiet) option works'
-mkdir dir
-gunzip -q dir &> output || true
-[ ! -s output ]
 
 
 begin_test 'Version information'

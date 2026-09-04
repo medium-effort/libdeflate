@@ -6,38 +6,33 @@ decompression.
 The supported formats are:
 
 - DEFLATE (raw)
+- NVIDIA GDEFLATE (raw)
 - zlib (a.k.a. DEFLATE with a zlib wrapper)
 - gzip (a.k.a. DEFLATE with a gzip wrapper)
 
 libdeflate is heavily optimized.  It is significantly faster than the zlib
-library, both for compression and decompression, and especially on x86 and ARM
+library, both for compression and decompression, and especially on x86
 processors.  In addition, libdeflate provides optional high compression modes
 that provide a better compression ratio than the zlib's "level 9".
 
-libdeflate itself is a library.  The following command-line programs which use
-this library are also included:
+libdeflate itself is a library, but the following command-line programs which
+use this library are also provided:
 
-* `libdeflate-gzip`, a program which can be a drop-in replacement for standard
-  `gzip` under some circumstances.  Note that `libdeflate-gzip` has some
-  limitations; it is provided for convenience and is **not** meant to be the
-  main use case of libdeflate.  It needs a lot of memory to process large files,
-  and it omits support for some infrequently-used options of GNU gzip.
-
-* `benchmark`, a test program that does round-trip compression and decompression
-  of the provided data, and measures the compression and decompression speed.
-  It can use libdeflate, zlib, or a combination of the two.
-
-* `checksum`, a test program that checksums the provided data with Adler-32 or
-  CRC-32, and optionally measures the speed.  It can use libdeflate or zlib.
+* gzip (or gunzip), a program which mostly behaves like the standard equivalent,
+  except that it does not yet have good streaming support and therefore does not
+  yet support very large files
+* benchmark, a program for benchmarking in-memory compression and decompression
 
 For the release notes, see the [NEWS file](NEWS.md).
 
 ## Table of Contents
 
 - [Building](#building)
-  - [Using CMake](#using-cmake)
-  - [Directly integrating the library sources](#directly-integrating-the-library-sources)
-  - [Supported compilers](#supported-compilers)
+  - [For UNIX](#for-unix)
+  - [For macOS](#for-macos)
+  - [For Windows](#for-windows)
+    - [Using Cygwin](#using-cygwin)
+    - [Using MSYS2](#using-msys2)
 - [API](#api)
 - [Bindings for other programming languages](#bindings-for-other-programming-languages)
 - [DEFLATE vs. zlib vs. gzip](#deflate-vs-zlib-vs-gzip)
@@ -45,73 +40,127 @@ For the release notes, see the [NEWS file](NEWS.md).
 - [Motivation](#motivation)
 - [License](#license)
 
+
 # Building
 
-## Using CMake
+## For UNIX
 
-libdeflate uses [CMake](https://cmake.org/).  It can be built just like any
-other CMake project, e.g. with:
+Just run `make`, then (if desired) `make install`.  You need GNU Make and either
+GCC or Clang.  GCC is recommended because it builds slightly faster binaries.
 
-    cmake -B build && cmake --build build
+By default, the following targets are built: the static library `libdeflate.a`,
+the shared library `libdeflate.so`, the `gzip` program, and the `gunzip` program
+(which is actually just a hard link to `gzip`).  Benchmarking and test programs
+such as `benchmark` are not built by default.  You can run `make help` to
+display the available build targets.
 
-By default the following targets are built:
+There are also many options which can be set on the `make` command line, e.g. to
+omit library features or to customize the directories into which `make install`
+installs files.  See the Makefile for details.
 
-- The static library (normally called `libdeflate.a`)
-- The shared library (normally called `libdeflate.so`)
-- The `libdeflate-gzip` program, including its alias `libdeflate-gunzip`
+## For macOS
 
-Besides the standard CMake build and installation options, there are some
-libdeflate-specific build options.  See `CMakeLists.txt` for the list of these
-options.  To set an option, add `-DOPTION=VALUE` to the `cmake` command.
+Prebuilt macOS binaries can be installed with [Homebrew](https://brew.sh):
+
+    brew install libdeflate
+
+But if you need to build the binaries yourself, see the section for UNIX above.
+
+## For Windows
 
 Prebuilt Windows binaries can be downloaded from
-https://github.com/ebiggers/libdeflate/releases.
+https://github.com/ebiggers/libdeflate/releases.  But if you need to build the
+binaries yourself, MinGW (gcc) is the recommended compiler to use.  If you're
+performing the build *on* Windows (as opposed to cross-compiling for Windows on
+Linux, for example), you'll need to follow the directions in **one** of the two
+sections below to set up a minimal UNIX-compatible environment using either
+Cygwin or MSYS2, then do the build.  (Other MinGW distributions may not work, as
+they often omit basic UNIX tools such as `sh`.)
 
-## Directly integrating the library sources
+Alternatively, libdeflate may be built using the Visual Studio toolchain by
+running `nmake /f Makefile.msc`.  However, while this is supported in the sense
+that it will produce working binaries, it is not recommended because the
+binaries built with MinGW will be significantly faster.
 
-Although the official build system is CMake, care has been taken to keep the
-library source files compilable directly, without a prerequisite configuration
-step.  Therefore, it is also fine to just add the library source files directly
-to your application, without using CMake.
+Also note that 64-bit binaries are faster than 32-bit binaries and should be
+preferred whenever possible.
 
-You should compile both `lib/*.c` and `lib/*/*.c`.  You don't need to worry
-about excluding irrelevant architecture-specific code, as this is already
-handled in the source files themselves using `#ifdef`s.
+### Using Cygwin
 
-If you are doing a freestanding build with `-ffreestanding`, you must add
-`-DFREESTANDING` as well (matching what the `CMakeLists.txt` does).
+Run the Cygwin installer, available from https://cygwin.com/setup-x86_64.exe.
+When you get to the package selection screen, choose the following additional
+packages from category "Devel":
 
-## Supported compilers
+- git
+- make
+- mingw64-i686-binutils
+- mingw64-i686-gcc-g++
+- mingw64-x86_64-binutils
+- mingw64-x86_64-gcc-g++
 
-- gcc: v4.9 and later
-- clang: v3.9 and later (upstream), Xcode 8 and later (Apple)
-- MSVC: Visual Studio 2019 version 16.8 and later
-- Other compilers: any other C11-compatible compiler should work, though if your
-  compiler pretends to be gcc, clang, or MSVC, it needs to be sufficiently
-  compatible with the compiler it pretends to be.
+(You may skip the mingw64-i686 packages if you don't need to build 32-bit
+binaries.)
 
-The above are the minimums, but using a newer compiler allows more of the
-architecture-optimized code to be built.  libdeflate is most heavily optimized
-for gcc and clang, but MSVC is supported fairly well now too.
+After the installation finishes, open a Cygwin terminal.  Then download
+libdeflate's source code (if you haven't already) and `cd` into its directory:
 
-The recommended optimization flag is `-O2`, and the `CMakeLists.txt` sets this
-for release builds.  `-O3` is fine too, but often `-O2` actually gives better
-results.  It's unnecessary to add flags such as `-mavx2` or `/arch:AVX2`, though
-you can do so if you want to.  Most of the relevant optimized functions are
-built regardless of such flags, and appropriate ones are selected at runtime.
-For the same reason, flags like `-mno-avx2` do *not* cause all code using the
-corresponding instruction set extension to be omitted from the binary; this is
-working as intended due to the use of runtime CPU feature detection.
+    git clone https://github.com/ebiggers/libdeflate
+    cd libdeflate
 
-If using gcc, your gcc should always be paired with a binutils version that is
-not much older than itself, to avoid problems where the compiler generates
-instructions the assembler cannot assemble.  Usually systems have their gcc and
-binutils paired properly, but rarely a mismatch can arise in cases such as the
-user installing a newer gcc version without a proper binutils alongside it.
-Since libdeflate v1.22, the CMake-based build system will detect incompatible
-binutils versions and disable some optimized code accordingly.  In older
-versions of libdeflate, or if CMake is not being used, a too-old binutils can
-cause build errors like "no such instruction" from the assembler.
+(Note that it's not required to use `git`; an alternative is to extract a .zip
+or .tar.gz archive of the source code downloaded from the releases page.
+Also, in case you need to find it in the file browser, note that your home
+directory in Cygwin is usually located at `C:\cygwin64\home\<your username>`.)
+
+Then, to build 64-bit binaries:
+
+    make CC=x86_64-w64-mingw32-gcc
+
+or to build 32-bit binaries:
+
+    make CC=i686-w64-mingw32-gcc
+
+### Using MSYS2
+
+Run the MSYS2 installer, available from http://www.msys2.org/.  After
+installing, open an MSYS2 shell and run:
+
+    pacman -Syu
+
+Say `y`, then when it's finished, close the shell window and open a new one.
+Then run the same command again:
+
+    pacman -Syu
+
+Then, install the packages needed to build libdeflate:
+
+    pacman -S git \
+              make \
+              mingw-w64-i686-binutils \
+              mingw-w64-i686-gcc \
+              mingw-w64-x86_64-binutils \
+              mingw-w64-x86_64-gcc
+
+(You may skip the mingw-w64-i686 packages if you don't need to build 32-bit
+binaries.)
+
+Then download libdeflate's source code (if you haven't already):
+
+    git clone https://github.com/ebiggers/libdeflate
+
+(Note that it's not required to use `git`; an alternative is to extract a .zip
+or .tar.gz archive of the source code downloaded from the releases page.
+Also, in case you need to find it in the file browser, note that your home
+directory in MSYS2 is usually located at `C:\msys64\home\<your username>`.)
+
+Then, to build 64-bit binaries, open "MSYS2 MinGW 64-bit" from the Start menu
+and run the following commands:
+
+    cd libdeflate
+    make clean
+    make
+
+Or to build 32-bit binaries, do the same but use "MSYS2 MinGW 32-bit" instead.
 
 # API
 
@@ -135,7 +184,10 @@ guessing.  However, libdeflate's decompression routines do optionally provide
 the actual number of output bytes in case you need it.
 
 Windows developers: note that the calling convention of libdeflate.dll is
-"cdecl".  (libdeflate v1.4 through v1.12 used "stdcall" instead.)
+"stdcall" -- the same as the Win32 API.  If you call into libdeflate.dll using a
+non-C/C++ language, or dynamically using LoadLibrary(), make sure to use the
+stdcall convention.  Using the wrong convention may crash your application.
+(Note: older versions of libdeflate used the "cdecl" convention instead.)
 
 # Bindings for other programming languages
 
@@ -144,26 +196,16 @@ libdeflate from a programming language other than C or C++, consider using the
 following bindings:
 
 * C#: [LibDeflate.NET](https://github.com/jzebedee/LibDeflate.NET)
-* Delphi: [libdeflate-pas](https://github.com/zedxxx/libdeflate-pas)
 * Go: [go-libdeflate](https://github.com/4kills/go-libdeflate)
-* Java: [jlibdeflate](https://github.com/fulcrumgenomics/jlibdeflate)
+* Java: [libdeflate-java](https://github.com/astei/libdeflate-java)
 * Julia: [LibDeflate.jl](https://github.com/jakobnissen/LibDeflate.jl)
-* Nim: [libdeflate-nim](https://github.com/gemesa/libdeflate-nim)
-* Perl: [Gzip::Libdeflate](https://github.com/benkasminbullock/gzip-libdeflate)
-* PHP: [ext-libdeflate](https://github.com/pmmp/ext-libdeflate)
 * Python: [deflate](https://github.com/dcwatson/deflate)
 * Ruby: [libdeflate-ruby](https://github.com/kaorimatz/libdeflate-ruby)
 * Rust: [libdeflater](https://github.com/adamkewley/libdeflater)
-* Swift: [SwiftDeflate](https://github.com/dcwatson/SwiftDeflate)
 
 Note: these are third-party projects which haven't necessarily been vetted by
 the authors of libdeflate.  Please direct all questions, bugs, and improvements
 for these bindings to their authors.
-
-Also, unfortunately many of these bindings bundle or pin an old version of
-libdeflate.  To avoid known issues in old versions and to improve performance,
-before using any of these bindings please ensure that the bundled or pinned
-version of libdeflate has been upgraded to the latest release.
 
 # DEFLATE vs. zlib vs. gzip
 
@@ -242,3 +284,5 @@ real applications can use it as well.
 libdeflate is [MIT-licensed](COPYING).
 
 I am not aware of any patents or patent applications relevant to libdeflate.
+
+NVIDIA GDEFLATE changes are [Apache-2.0-licensed](COPYING).

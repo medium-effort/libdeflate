@@ -28,6 +28,7 @@
 #include "prog_util.h"
 
 #include <errno.h>
+#include <sys/types.h>
 #include <sys/stat.h>
 #ifdef _WIN32
 #  include <sys/utime.h>
@@ -36,12 +37,6 @@
 #  include <unistd.h>
 #  include <utime.h>
 #endif
-
-#define GZIP_MIN_HEADER_SIZE	10
-#define GZIP_FOOTER_SIZE	8
-#define GZIP_MIN_OVERHEAD	(GZIP_MIN_HEADER_SIZE + GZIP_FOOTER_SIZE)
-#define GZIP_ID1		0x1F
-#define GZIP_ID2		0x8B
 
 struct options {
 	bool to_stdout;
@@ -53,13 +48,13 @@ struct options {
 	const tchar *suffix;
 };
 
-static const tchar *const optstring = T("1::2::3::4::5::6::7::8::9::cdfhknqS:tV");
+static const tchar *const optstring = T("1::2::3::4::5::6::7::8::9::cdfhknS:tV");
 
 static void
 show_usage(FILE *fp)
 {
 	fprintf(fp,
-"Usage: %"TS" [-LEVEL] [-cdfhkqtV] [-S SUF] FILE...\n"
+"Usage: %"TS" [-LEVEL] [-cdfhkV] [-S SUF] FILE...\n"
 "Compress or decompress the specified FILEs.\n"
 "\n"
 "Options:\n"
@@ -68,12 +63,9 @@ show_usage(FILE *fp)
 "  -12       slowest (best) compression\n"
 "  -c        write to standard output\n"
 "  -d        decompress\n"
-"  -f        overwrite existing output files; (de)compress hard-linked files;\n"
-"            allow reading/writing compressed data from/to terminal;\n"
-"            with gunzip -c, pass through non-gzipped data\n"
+"  -f        overwrite existing output files\n"
 "  -h        print this help\n"
 "  -k        don't delete input files\n"
-"  -q        suppress warnings\n"
 "  -S SUF    use suffix SUF instead of .gz\n"
 "  -t        test file integrity\n"
 "  -V        show version and legal information\n",
@@ -184,6 +176,13 @@ out:
 	return ret;
 }
 
+static u32
+load_u32_gzip(const u8 *p)
+{
+	return ((u32)p[0] << 0) | ((u32)p[1] << 8) |
+		((u32)p[2] << 16) | ((u32)p[3] << 24);
+}
+
 static int
 do_decompress(struct libdeflate_decompressor *decompressor,
 	      struct file_stream *in, struct file_stream *out,
@@ -193,19 +192,15 @@ do_decompress(struct libdeflate_decompressor *decompressor,
 	size_t compressed_size = in->mmap_size;
 	void *uncompressed_data = NULL;
 	size_t uncompressed_size;
-	size_t max_uncompressed_size;
 	size_t actual_in_nbytes;
 	size_t actual_out_nbytes;
 	enum libdeflate_result result;
 	int ret = 0;
 
-	if (compressed_size < GZIP_MIN_OVERHEAD ||
-	    compressed_data[0] != GZIP_ID1 ||
-	    compressed_data[1] != GZIP_ID2) {
-		if (options->force && options->to_stdout)
-			return full_write(out, compressed_data, compressed_size);
-		msg("%"TS": not in gzip format", in->name);
-		return -1;
+	if (compressed_size < sizeof(u32)) {
+	       msg("%"TS": not in gzip format", in->name);
+	       ret = -1;
+	       goto out;
 	}
 
 	/*
@@ -215,28 +210,12 @@ do_decompress(struct libdeflate_decompressor *decompressor,
 	 * not be the largest; or the real size may be >= 4 GiB, causing ISIZE
 	 * to overflow.  In any case, make sure to allocate at least one byte.
 	 */
-	uncompressed_size =
-		get_unaligned_le32(&compressed_data[compressed_size - 4]);
+	uncompressed_size = load_u32_gzip(&compressed_data[compressed_size - 4]);
 	if (uncompressed_size == 0)
 		uncompressed_size = 1;
 
-	/*
-	 * DEFLATE cannot expand data more than 1032x, so there's no need to
-	 * ever allocate a buffer more than 1032 times larger than the
-	 * compressed data.  This is a fail-safe, albeit not a very good one, if
-	 * ISIZE becomes corrupted on a small file.  (The 1032x number comes
-	 * from each 2 bits generating a 258-byte match.  This is a hard upper
-	 * bound; the real upper bound is slightly smaller due to overhead.)
-	 */
-	if (compressed_size <= SIZE_MAX / 1032)
-		max_uncompressed_size = compressed_size * 1032;
-	else
-		max_uncompressed_size = SIZE_MAX;
-
 	do {
 		if (uncompressed_data == NULL) {
-			uncompressed_size = MIN(uncompressed_size,
-						max_uncompressed_size);
 			uncompressed_data = xmalloc(uncompressed_size);
 			if (uncompressed_data == NULL) {
 				msg("%"TS": file is probably too large to be "
@@ -255,11 +234,6 @@ do_decompress(struct libdeflate_decompressor *decompressor,
 						       &actual_out_nbytes);
 
 		if (result == LIBDEFLATE_INSUFFICIENT_SPACE) {
-			if (uncompressed_size >= max_uncompressed_size) {
-				msg("Bug in libdeflate_gzip_decompress_ex(): data expanded too much!");
-				ret = -1;
-				goto out;
-			}
 			if (uncompressed_size * 2 <= uncompressed_size) {
 				msg("%"TS": file corrupt or too large to be "
 				    "processed by this program", in->name);
@@ -282,7 +256,7 @@ do_decompress(struct libdeflate_decompressor *decompressor,
 		if (actual_in_nbytes == 0 ||
 		    actual_in_nbytes > compressed_size ||
 		    actual_out_nbytes > uncompressed_size) {
-			msg("Bug in libdeflate_gzip_decompress_ex(): impossible actual_nbytes value!");
+			msg("Bug in libdeflate_gzip_decompress_ex()!");
 			ret = -1;
 			goto out;
 		}
@@ -311,15 +285,15 @@ stat_file(struct file_stream *in, stat_t *stbuf, bool allow_hard_links)
 	}
 
 	if (!S_ISREG(stbuf->st_mode) && !in->is_standard_stream) {
-		warn("%"TS" is %s -- skipping",
-		     in->name, S_ISDIR(stbuf->st_mode) ? "a directory" :
-							 "not a regular file");
+		msg("%"TS" is %s -- skipping",
+		    in->name, S_ISDIR(stbuf->st_mode) ? "a directory" :
+							"not a regular file");
 		return -2;
 	}
 
 	if (stbuf->st_nlink > 1 && !allow_hard_links) {
-		warn("%"TS" has multiple hard links -- skipping (use -f to process anyway)",
-		     in->name);
+		msg("%"TS" has multiple hard links -- skipping "
+		    "(use -f to process anyway)", in->name);
 		return -2;
 	}
 
@@ -351,19 +325,21 @@ restore_timestamps(struct file_stream *out, const tchar *newpath,
 		   const stat_t *stbuf)
 {
 	int ret;
-#ifdef __APPLE__
-	struct timespec times[2] = { stbuf->st_atimespec, stbuf->st_mtimespec };
-
+#if defined(HAVE_FUTIMENS) && defined(HAVE_STAT_NANOSECOND_PRECISION)
+	struct timespec times[2] = {
+		stbuf->st_atim, stbuf->st_mtim,
+	};
 	ret = futimens(out->fd, times);
-#elif (defined(HAVE_FUTIMENS) && defined(HAVE_STAT_NANOSECOND_PRECISION)) || \
-	/* fallback detection method for direct compilation */ \
-	(!defined(HAVE_CONFIG_H) && defined(UTIME_NOW))
-	struct timespec times[2] = { stbuf->st_atim, stbuf->st_mtim };
-
-	ret = futimens(out->fd, times);
+#elif defined(HAVE_FUTIMES) && defined(HAVE_STAT_NANOSECOND_PRECISION)
+	struct timeval times[2] = {
+		{ stbuf->st_atim.tv_sec, stbuf->st_atim.tv_nsec / 1000, },
+		{ stbuf->st_mtim.tv_sec, stbuf->st_mtim.tv_nsec / 1000, },
+	};
+	ret = futimes(out->fd, times);
 #else
-	struct tutimbuf times = { stbuf->st_atime, stbuf->st_mtime };
-
+	struct tutimbuf times = {
+		stbuf->st_atime, stbuf->st_mtime,
+	};
 	ret = tutime(newpath, &times);
 #endif
 	if (ret != 0)
@@ -408,8 +384,9 @@ decompress_file(struct libdeflate_decompressor *decompressor, const tchar *path,
 				if (!options->to_stdout)
 					newpath = (tchar *)path;
 			} else if (!options->to_stdout) {
-				warn("\"%"TS"\" does not end with the %"TS" suffix -- skipping",
-				     path, options->suffix);
+				msg("\"%"TS"\" does not end with the %"TS" "
+				    "suffix -- skipping",
+				    path, options->suffix);
 				return -2;
 			}
 		} else if (!options->to_stdout) {
@@ -563,7 +540,7 @@ tmain(int argc, tchar *argv[])
 	options.force = false;
 	options.keep = false;
 	options.test = false;
-	options.compression_level = -1;
+	options.compression_level = 6;
 	options.suffix = T(".gz");
 
 	while ((opt_char = tgetopt(argc, argv, optstring)) != -1) {
@@ -604,9 +581,6 @@ tmain(int argc, tchar *argv[])
 			 *  already behaves this way by default, so accept the
 			 *  option as a no-op.
 			 */
-			break;
-		case 'q':
-			suppress_warnings = true;
 			break;
 		case 'S':
 			options.suffix = toptarg;
@@ -672,17 +646,13 @@ tmain(int argc, tchar *argv[])
 		libdeflate_free_compressor(c);
 	}
 
-	switch (ret) {
-	case 0:
-		/* No warnings or errors */
-		return 0;
-	case 2:
-		/* At least one warning, but no errors */
-		if (suppress_warnings)
-			return 0;
-		return 2;
-	default:
-		/* At least one error */
-		return 1;
-	}
+	/*
+	 * If ret=0, there were no warnings or errors.  Exit with status 0.
+	 * If ret=2, there was at least one warning.  Exit with status 2.
+	 * Else, there was at least one error.  Exit with status 1.
+	 */
+	if (ret != 0 && ret != 2)
+		ret = 1;
+
+	return ret;
 }

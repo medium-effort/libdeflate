@@ -28,14 +28,17 @@
 #ifndef LIB_ARM_MATCHFINDER_IMPL_H
 #define LIB_ARM_MATCHFINDER_IMPL_H
 
-#include "cpu_features.h"
-
-#if HAVE_NEON_NATIVE
+#ifdef __ARM_NEON
+#  include <arm_neon.h>
 static forceinline void
 matchfinder_init_neon(mf_pos_t *data, size_t size)
 {
 	int16x8_t *p = (int16x8_t *)data;
-	int16x8_t v = vdupq_n_s16(MATCHFINDER_INITVAL);
+	int16x8_t v = (int16x8_t) {
+		MATCHFINDER_INITVAL, MATCHFINDER_INITVAL, MATCHFINDER_INITVAL,
+		MATCHFINDER_INITVAL, MATCHFINDER_INITVAL, MATCHFINDER_INITVAL,
+		MATCHFINDER_INITVAL, MATCHFINDER_INITVAL,
+	};
 
 	STATIC_ASSERT(MATCHFINDER_MEM_ALIGNMENT % sizeof(*p) == 0);
 	STATIC_ASSERT(MATCHFINDER_SIZE_ALIGNMENT % (4 * sizeof(*p)) == 0);
@@ -56,7 +59,12 @@ static forceinline void
 matchfinder_rebase_neon(mf_pos_t *data, size_t size)
 {
 	int16x8_t *p = (int16x8_t *)data;
-	int16x8_t v = vdupq_n_s16((u16)-MATCHFINDER_WINDOW_SIZE);
+	int16x8_t v = (int16x8_t) {
+		(u16)-MATCHFINDER_WINDOW_SIZE, (u16)-MATCHFINDER_WINDOW_SIZE,
+		(u16)-MATCHFINDER_WINDOW_SIZE, (u16)-MATCHFINDER_WINDOW_SIZE,
+		(u16)-MATCHFINDER_WINDOW_SIZE, (u16)-MATCHFINDER_WINDOW_SIZE,
+		(u16)-MATCHFINDER_WINDOW_SIZE, (u16)-MATCHFINDER_WINDOW_SIZE,
+	};
 
 	STATIC_ASSERT(MATCHFINDER_MEM_ALIGNMENT % sizeof(*p) == 0);
 	STATIC_ASSERT(MATCHFINDER_SIZE_ALIGNMENT % (4 * sizeof(*p)) == 0);
@@ -73,6 +81,6 @@ matchfinder_rebase_neon(mf_pos_t *data, size_t size)
 }
 #define matchfinder_rebase matchfinder_rebase_neon
 
-#endif /* HAVE_NEON_NATIVE */
+#endif /* __ARM_NEON */
 
 #endif /* LIB_ARM_MATCHFINDER_IMPL_H */

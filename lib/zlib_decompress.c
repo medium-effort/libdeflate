@@ -1,6 +1,8 @@
 /*
  * zlib_decompress.c - decompress with a zlib wrapper
  *
+ * Originally public domain; changes after 2016-09-07 are copyrighted.
+ *
  * Copyright 2016 Eric Biggers
  *
  * Permission is hereby granted, free of charge, to any person
@@ -25,10 +27,12 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "lib_common.h"
+#include "unaligned.h"
 #include "zlib_constants.h"
 
-LIBDEFLATEAPI enum libdeflate_result
+#include "libdeflate.h"
+
+LIBDEFLATEEXPORT enum libdeflate_result LIBDEFLATEAPI
 libdeflate_zlib_decompress_ex(struct libdeflate_decompressor *d,
 			      const void *in, size_t in_nbytes,
 			      void *out, size_t out_nbytes_avail,
@@ -92,7 +96,7 @@ libdeflate_zlib_decompress_ex(struct libdeflate_decompressor *d,
 	return LIBDEFLATE_SUCCESS;
 }
 
-LIBDEFLATEAPI enum libdeflate_result
+LIBDEFLATEEXPORT enum libdeflate_result LIBDEFLATEAPI
 libdeflate_zlib_decompress(struct libdeflate_decompressor *d,
 			   const void *in, size_t in_nbytes,
 			   void *out, size_t out_nbytes_avail,

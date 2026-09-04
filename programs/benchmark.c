@@ -23,6 +23,9 @@
  * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
  * OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * SPDX-FileCopyrightText: Copyright (c) 2020, 2021, 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "test_util.h"
@@ -33,6 +36,7 @@ enum format {
 	DEFLATE_FORMAT,
 	ZLIB_FORMAT,
 	GZIP_FORMAT,
+	GDEFLATE_FORMAT,
 };
 
 struct compressor {
@@ -149,6 +153,172 @@ static const struct engine libdeflate_engine = {
 	.init_decompressor	= libdeflate_engine_init_decompressor,
 	.decompress		= libdeflate_engine_decompress,
 	.destroy_decompressor	= libdeflate_engine_destroy_decompressor,
+};
+
+/******************************************************************************/
+
+static bool
+gdeflate_engine_init_compressor(struct compressor *c)
+{
+	if (c->format != GDEFLATE_FORMAT) {
+		msg_errno("Only GDEFLATE format supported");
+		return false;
+	}
+
+	c->private = libdeflate_alloc_gdeflate_compressor(c->level);
+
+	if (c == NULL) {
+		msg_errno("Unable to allocate gdeflate compressor with "
+			  "compression level %d", c->level);
+	}
+
+	return c->private != NULL;
+}
+
+static size_t
+gdeflate_engine_compress_bound(struct compressor *c, size_t in_nbytes)
+{
+	size_t npages;
+	size_t comp_bound = libdeflate_gdeflate_compress_bound(c->private,
+						in_nbytes, &npages);
+	/* Return the compress bound and page table size. */
+	return comp_bound + npages * sizeof(size_t);
+}
+
+static size_t
+gdeflate_engine_compress(struct compressor *c, const void *in,
+			 size_t in_nbytes, void *out, size_t out_nbytes_avail)
+{
+	u8 *out_bytes = out;
+	size_t npages;
+	size_t comp_bound = libdeflate_gdeflate_compress_bound(c->private,
+						in_nbytes, &npages);
+	size_t page_comp_bound = comp_bound / npages;
+	struct libdeflate_gdeflate_out_page *out_pages;
+	size_t out_size;
+
+	/* Allocate output page array. */
+	out_pages = malloc(npages * sizeof(out_pages[0]));
+
+	if (out_pages == NULL) {
+		msg_errno("Page array memory allocation failed");
+		return 0;
+	}
+
+	/* Allocate temp space. */
+	out_pages[0].data = malloc(comp_bound);
+
+	if (out_pages[0].data == NULL) {
+		msg_errno("Tenp space memory allocation failed");
+		free(out_pages);
+		return 0;
+	}
+
+	/* Initialize output page array. */
+	for (size_t page = 0; page < npages; page++) {
+		if (page > 0) {
+			out_pages[page].data = (u8*)out_pages[0].data +
+				page_comp_bound * page;
+		}
+
+		out_pages[page].nbytes = page_comp_bound;
+	}
+
+	out_size = libdeflate_gdeflate_compress(c->private, in,
+						in_nbytes, out_pages,
+						npages);
+
+	if (out_size > 0) {
+		/* Copy compressed pages and their sizes to output. */
+		for (size_t page = 0; page < npages; page++) {
+			*(size_t*)out_bytes = out_pages[page].nbytes;
+			out_bytes += sizeof(size_t);
+
+			memcpy(out_bytes, out_pages[page].data,
+				out_pages[page].nbytes);
+			out_bytes += out_pages[page].nbytes;
+		}
+	}
+
+	free(out_pages[0].data);
+	free(out_pages);
+
+	return out_size;
+}
+
+static void
+gdeflate_engine_destroy_compressor(struct compressor *c)
+{
+	libdeflate_free_gdeflate_compressor(c->private);
+}
+
+static bool
+gdeflate_engine_init_decompressor(struct decompressor *d)
+{
+	if (d->format != GDEFLATE_FORMAT) {
+		msg_errno("Only GDEFLATE format supported");
+		return false;
+	}
+
+	d->private = libdeflate_alloc_gdeflate_decompressor();
+
+	if (d == NULL)
+		msg_errno("Unable to allocate gdeflate decompressor");
+
+	return d->private != NULL;
+}
+
+static bool
+gdeflate_engine_decompress(struct decompressor *d, const void *in,
+			     size_t in_nbytes, void *out, size_t out_nbytes)
+{
+	bool result;
+	const u8 *in_bytes = in;
+	struct libdeflate_gdeflate_in_page *in_pages;
+	size_t npages;
+	libdeflate_gdeflate_compress_bound(d->private, out_nbytes, &npages);
+
+	/* Allocate input page array. */
+	in_pages = malloc(npages * sizeof(in_pages[0]));
+
+	if (in_pages == NULL) {
+		msg_errno("Page array memory allocation failed");
+		return 0;
+	}
+
+	/* Initialize input page array. */
+	for (size_t page = 0; page < npages; page++) {
+		in_pages[page].data = in_bytes + sizeof(size_t);
+		in_pages[page].nbytes = *(size_t*)in_bytes;
+
+		in_bytes += in_pages[page].nbytes + sizeof(size_t);
+	}
+
+	result = !libdeflate_gdeflate_decompress(d->private, in_pages, npages,
+					         out, out_nbytes, NULL);
+
+	free(in_pages);
+
+	return result;
+}
+
+static void
+gdeflate_engine_destroy_decompressor(struct decompressor *d)
+{
+	libdeflate_free_gdeflate_decompressor(d->private);
+}
+
+static const struct engine gdeflate_engine = {
+	.name			= T("gdeflate"),
+
+	.init_compressor	= gdeflate_engine_init_compressor,
+	.compress_bound		= gdeflate_engine_compress_bound,
+	.compress		= gdeflate_engine_compress,
+	.destroy_compressor	= gdeflate_engine_destroy_compressor,
+
+	.init_decompressor	= gdeflate_engine_init_decompressor,
+	.decompress		= gdeflate_engine_decompress,
+	.destroy_decompressor	= gdeflate_engine_destroy_decompressor,
 };
 
 /******************************************************************************/
@@ -299,6 +469,7 @@ static const struct engine libz_engine = {
 
 static const struct engine * const all_engines[] = {
 	&libdeflate_engine,
+	&gdeflate_engine,
 	&libz_engine,
 };
 
@@ -420,7 +591,9 @@ show_version(void)
 "\n"
 "This program is free software which may be modified and/or redistributed\n"
 "under the terms of the MIT license.  There is NO WARRANTY, to the extent\n"
-"permitted by law.  See the COPYING file for details.\n"
+"permitted by law.  See the COPYING file for details.\n\n"
+"SPDX-FileCopyrightText: Copyright (c) 2020, 2021, 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.\n"
+"SPDX-License-Identifier: Apache-2.0\n"
 	);
 }
 
@@ -631,6 +804,16 @@ tmain(int argc, tchar *argv[])
 	if (level == 0)
 		allow_expansion = true;
 
+	if (compress_engine == &gdeflate_engine ||
+		decompress_engine == &gdeflate_engine) {
+		format = GDEFLATE_FORMAT;
+	}
+
+	if (compress_engine != decompress_engine && format == GDEFLATE_FORMAT) {
+		msg("Only gdeflate engine can be used for GDEFLATE format.");
+		goto out;
+	}
+
 	ret = -1;
 	if (!compressor_init(&compressor, level, format, compress_engine))
 		goto out;
@@ -661,6 +844,7 @@ tmain(int argc, tchar *argv[])
 	}
 
 	printf("Benchmarking %s compression:\n",
+	       format == GDEFLATE_FORMAT ? "GDEFLATE" :
 	       format == DEFLATE_FORMAT ? "DEFLATE" :
 	       format == ZLIB_FORMAT ? "zlib" : "gzip");
 	printf("\tCompression level: %d\n", level);

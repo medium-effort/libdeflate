@@ -25,6 +25,16 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#ifndef _WIN32
+/* for MAP_ANONYMOUS or MAP_ANON, which unfortunately aren't part of POSIX... */
+#  undef _POSIX_C_SOURCE
+#  ifdef __APPLE__
+#    define _DARWIN_C_SOURCE
+#  elif defined(__linux__)
+#    define _GNU_SOURCE
+#  endif
+#endif
+
 #include "test_util.h"
 
 #include <fcntl.h>
@@ -42,7 +52,7 @@
 #endif
 
 /* Abort with an error message */
-NORETURN void
+_noreturn void
 assertion_failed(const char *expr, const char *file, int line)
 {
 	msg("Assertion failed: %s at %s:%d", expr, file, line);
@@ -148,9 +158,7 @@ timer_ticks(void)
 
 	QueryPerformanceCounter(&count);
 	return count.QuadPart;
-#elif defined(HAVE_CLOCK_GETTIME) || \
-	/* fallback detection method for direct compilation */ \
-	(!defined(HAVE_CONFIG_H) && defined(CLOCK_MONOTONIC))
+#elif defined(HAVE_CLOCK_GETTIME)
 	struct timespec ts;
 
 	clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -174,9 +182,7 @@ timer_frequency(void)
 
 	QueryPerformanceFrequency(&freq);
 	return freq.QuadPart;
-#elif defined(HAVE_CLOCK_GETTIME) || \
-	/* fallback detection method for direct compilation */ \
-	(!defined(HAVE_CONFIG_H) && defined(CLOCK_MONOTONIC))
+#elif defined(HAVE_CLOCK_GETTIME)
 	return 1000000000;
 #else
 	return 1000000;

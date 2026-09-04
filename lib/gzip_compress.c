@@ -1,6 +1,8 @@
 /*
  * gzip_compress.c - compress with a gzip wrapper
  *
+ * Originally public domain; changes after 2016-09-07 are copyrighted.
+ *
  * Copyright 2016 Eric Biggers
  *
  * Permission is hereby granted, free of charge, to any person
@@ -27,8 +29,11 @@
 
 #include "deflate_compress.h"
 #include "gzip_constants.h"
+#include "unaligned.h"
 
-LIBDEFLATEAPI size_t
+#include "libdeflate.h"
+
+LIBDEFLATEEXPORT size_t LIBDEFLATEAPI
 libdeflate_gzip_compress(struct libdeflate_compressor *c,
 			 const void *in, size_t in_nbytes,
 			 void *out, size_t out_nbytes_avail)
@@ -54,7 +59,7 @@ libdeflate_gzip_compress(struct libdeflate_compressor *c,
 	out_next += 4;
 	/* XFL */
 	xfl = 0;
-	compression_level = libdeflate_get_compression_level(c);
+	compression_level = deflate_get_compression_level(c);
 	if (compression_level < 2)
 		xfl |= GZIP_XFL_FASTEST_COMPRESSION;
 	else if (compression_level >= 8)
@@ -81,7 +86,7 @@ libdeflate_gzip_compress(struct libdeflate_compressor *c,
 	return out_next - (u8 *)out;
 }
 
-LIBDEFLATEAPI size_t
+LIBDEFLATEEXPORT size_t LIBDEFLATEAPI
 libdeflate_gzip_compress_bound(struct libdeflate_compressor *c,
 			       size_t in_nbytes)
 {

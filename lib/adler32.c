@@ -26,14 +26,15 @@
  */
 
 #include "lib_common.h"
+#include "libdeflate.h"
 
-/* The Adler-32 divisor, or "base", value */
+/* The Adler-32 divisor, or "base", value. */
 #define DIVISOR 65521
 
 /*
- * MAX_CHUNK_LEN is the most bytes that can be processed without the possibility
- * of s2 overflowing when it is represented as an unsigned 32-bit integer.  This
- * value was computed using the following Python script:
+ * MAX_CHUNK_SIZE is the most bytes that can be processed without the
+ * possibility of s2 overflowing when it is represented as an unsigned 32-bit
+ * integer.  This value was computed using the following Python script:
  *
  *	divisor = 65521
  *	count = 0
@@ -51,94 +52,62 @@
  * has value 0xFF and that s1 and s2 started with the highest possible values
  * modulo the divisor.
  */
-#define MAX_CHUNK_LEN	5552
+#define MAX_CHUNK_SIZE	5552
 
-/*
- * Update the Adler-32 values s1 and s2 using n bytes from p, update p to p + n,
- * update n to 0, and reduce s1 and s2 mod DIVISOR.  It is assumed that neither
- * s1 nor s2 can overflow before the reduction at the end, i.e. n plus any bytes
- * already processed after the last reduction must not exceed MAX_CHUNK_LEN.
- *
- * This uses only portable C code.  This is used as a fallback when a vectorized
- * implementation of Adler-32 (e.g. AVX2) is unavailable on the platform.
- *
- * Some of the vectorized implementations also use this to handle the end of the
- * data when the data isn't evenly divisible by the length the vectorized code
- * works on.  To avoid compiler errors about target-specific option mismatches
- * when this is used in that way, this is a macro rather than a function.
- *
- * Although this is unvectorized, this does include an optimization where the
- * main loop processes four bytes at a time using a strategy similar to that
- * used by vectorized implementations.  This provides increased instruction-
- * level parallelism compared to the traditional 's1 += *p++; s2 += s1;'.
- */
-#define ADLER32_CHUNK(s1, s2, p, n)					\
-do {									\
-	if (n >= 4) {							\
-		u32 s1_sum = 0;						\
-		u32 byte_0_sum = 0;					\
-		u32 byte_1_sum = 0;					\
-		u32 byte_2_sum = 0;					\
-		u32 byte_3_sum = 0;					\
-									\
-		do {							\
-			s1_sum += s1;					\
-			s1 += p[0] + p[1] + p[2] + p[3];		\
-			byte_0_sum += p[0];				\
-			byte_1_sum += p[1];				\
-			byte_2_sum += p[2];				\
-			byte_3_sum += p[3];				\
-			p += 4;						\
-			n -= 4;						\
-		} while (n >= 4);					\
-		s2 += (4 * (s1_sum + byte_0_sum)) + (3 * byte_1_sum) +	\
-		      (2 * byte_2_sum) + byte_3_sum;			\
-	}								\
-	for (; n; n--, p++) {						\
-		s1 += *p;						\
-		s2 += s1;						\
-	}								\
-	s1 %= DIVISOR;							\
-	s2 %= DIVISOR;							\
-} while (0)
+typedef u32 (*adler32_func_t)(u32, const u8 *, size_t);
 
-static u32 MAYBE_UNUSED
-adler32_generic(u32 adler, const u8 *p, size_t len)
+/* Include architecture-specific implementations if available */
+#undef DEFAULT_IMPL
+#undef DISPATCH
+#if defined(__arm__) || defined(__aarch64__)
+#  include "arm/adler32_impl.h"
+#elif defined(__i386__) || defined(__x86_64__)
+#  include "x86/adler32_impl.h"
+#endif
+
+/* Define a generic implementation if needed */
+#ifndef DEFAULT_IMPL
+#define DEFAULT_IMPL adler32_generic
+static u32 adler32_generic(u32 adler, const u8 *p, size_t size)
 {
 	u32 s1 = adler & 0xFFFF;
 	u32 s2 = adler >> 16;
+	const u8 * const end = p + size;
 
-	while (len) {
-		size_t n = MIN(len, MAX_CHUNK_LEN & ~3);
+	while (p != end) {
+		size_t chunk_size = MIN(end - p, MAX_CHUNK_SIZE);
+		const u8 *chunk_end = p + chunk_size;
+		size_t num_unrolled_iterations = chunk_size / 4;
 
-		len -= n;
-		ADLER32_CHUNK(s1, s2, p, n);
+		while (num_unrolled_iterations--) {
+			s1 += *p++;
+			s2 += s1;
+			s1 += *p++;
+			s2 += s1;
+			s1 += *p++;
+			s2 += s1;
+			s1 += *p++;
+			s2 += s1;
+		}
+		while (p != chunk_end) {
+			s1 += *p++;
+			s2 += s1;
+		}
+		s1 %= DIVISOR;
+		s2 %= DIVISOR;
 	}
 
 	return (s2 << 16) | s1;
 }
+#endif /* !DEFAULT_IMPL */
 
-/* Include architecture-specific implementation(s) if available. */
-#undef DEFAULT_IMPL
-#undef arch_select_adler32_func
-typedef u32 (*adler32_func_t)(u32 adler, const u8 *p, size_t len);
-#if defined(ARCH_ARM32) || defined(ARCH_ARM64)
-#  include "arm/adler32_impl.h"
-#elif defined(ARCH_X86_32) || defined(ARCH_X86_64)
-#  include "x86/adler32_impl.h"
-#endif
+#ifdef DISPATCH
+static u32 dispatch(u32, const u8 *, size_t);
 
-#ifndef DEFAULT_IMPL
-#  define DEFAULT_IMPL adler32_generic
-#endif
+static volatile adler32_func_t adler32_impl = dispatch;
 
-#ifdef arch_select_adler32_func
-static u32 dispatch_adler32(u32 adler, const u8 *p, size_t len);
-
-static volatile adler32_func_t adler32_impl = dispatch_adler32;
-
-/* Choose the best implementation at runtime. */
-static u32 dispatch_adler32(u32 adler, const u8 *p, size_t len)
+/* Choose the fastest implementation at runtime */
+static u32 dispatch(u32 adler, const u8 *buffer, size_t size)
 {
 	adler32_func_t f = arch_select_adler32_func();
 
@@ -146,17 +115,16 @@ static u32 dispatch_adler32(u32 adler, const u8 *p, size_t len)
 		f = DEFAULT_IMPL;
 
 	adler32_impl = f;
-	return f(adler, p, len);
+	return adler32_impl(adler, buffer, size);
 }
 #else
-/* The best implementation is statically known, so call it directly. */
-#define adler32_impl DEFAULT_IMPL
+#  define adler32_impl DEFAULT_IMPL /* only one implementation, use it */
 #endif
 
-LIBDEFLATEAPI u32
-libdeflate_adler32(u32 adler, const void *buffer, size_t len)
+LIBDEFLATEEXPORT u32 LIBDEFLATEAPI
+libdeflate_adler32(u32 adler, const void *buffer, size_t size)
 {
-	if (buffer == NULL) /* Return initial value. */
+	if (buffer == NULL) /* return initial value */
 		return 1;
-	return adler32_impl(adler, buffer, len);
+	return adler32_impl(adler, buffer, size);
 }

@@ -28,11 +28,17 @@
 #ifndef PROGRAMS_TEST_UTIL_H
 #define PROGRAMS_TEST_UTIL_H
 
-#include "prog_util.h" /* must be included first */
+#include "prog_util.h"
 
 #include <zlib.h> /* for comparison purposes */
 
-NORETURN void
+#ifdef __GNUC__
+# define _noreturn __attribute__((noreturn))
+#else
+# define _noreturn
+#endif
+
+void _noreturn
 assertion_failed(const char *expr, const char *file, int line);
 
 #define ASSERT(expr) { if (unlikely(!(expr))) \

@@ -1,5 +1,5 @@
 /*
- * prog_util.h - common header for the programs; must be included first
+ * prog_util.h - utility functions for programs
  *
  * Copyright 2016 Eric Biggers
  *
@@ -28,78 +28,12 @@
 #ifndef PROGRAMS_PROG_UTIL_H
 #define PROGRAMS_PROG_UTIL_H
 
-/*
- * This header provides some utility functions and macros for the programs.  It
- * also defines some macros that control the behavior of system headers, and for
- * that reason it must be included before any system header.
- *
- * The latter part could be handled in this directory's CMakeLists.txt instead.
- * We put as much as possible here, directly in the source, to make it easier to
- * build the programs using other build systems (or "no build system").
- *
- * Note: CMakeLists.txt does do some dynamic feature detection, which can't be
- * done in the source code.  For that reason, it duplicates some of the logic
- * that defines macros like _GNU_SOURCE.  Keep this logic in sync.
- */
-
-#ifdef _WIN32
-
-  /*
-   * To keep the code similar on all platforms, sometimes we intentionally use
-   * the "deprecated" non-underscore-prefixed variants of functions in msvcrt.
-   */
-#  undef _CRT_NONSTDC_NO_DEPRECATE
-#  define _CRT_NONSTDC_NO_DEPRECATE	1
-
-  /*
-   * Similarly, to match other platforms we intentionally use the "non-secure"
-   * variants, which aren't actually any less secure when used properly.
-   */
-#  undef _CRT_SECURE_NO_WARNINGS
-#  define _CRT_SECURE_NO_WARNINGS	1
-
-#else
-
-   /* Needed to work with files >= 2 GiB on 32-bit systems */
-#  undef _FILE_OFFSET_BITS
-#  define _FILE_OFFSET_BITS	64
-
-   /* Note: when making changes here, update programs/CMakeLists.txt too. */
-#  if defined(__linux__)
-     /*
-      * May be needed for clock_gettime(), posix_fadvise(), posix_madvise(),
-      * futimens(), and MAP_ANONYMOUS, depending on the C library version.
-      */
-#    undef _GNU_SOURCE
-#    define _GNU_SOURCE
-#    undef _POSIX_C_SOURCE
-#    define _POSIX_C_SOURCE	200809L
-#  elif defined(__APPLE__)
-     /* Needed for O_NOFOLLOW and MAP_ANON */
-#    undef _DARWIN_C_SOURCE
-#    define _DARWIN_C_SOURCE
-#    undef _POSIX_C_SOURCE
-#  elif defined(__sun)
-     /* Needed for futimens() */
-#    undef __EXTENSIONS__
-#    define __EXTENSIONS__
-#    undef _POSIX_C_SOURCE
-#  else
-     /*
-      * Else assume that nothing else is needed.  Don't use _POSIX_C_SOURCE on
-      * BSD, since it causes anything non-POSIX, such as MAP_ANON, to be hidden.
-      */
-#    undef _POSIX_C_SOURCE
-#  endif
-#endif
-
 #ifdef HAVE_CONFIG_H
 #  include "config.h"
 #endif
 
-#include "../common_defs.h"
+#include "libdeflate.h"
 
-#include <inttypes.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -108,11 +42,34 @@
 #  include <sys/types.h>
 #endif
 
-#if defined(__GNUC__) || __has_attribute(format)
+#include "../common/common_defs.h"
+
+#ifdef __GNUC__
 # define _printf(str_idx, args_idx)	\
 		__attribute__((format(printf, str_idx, args_idx)))
 #else
 # define _printf(str_idx, args_idx)
+#endif
+
+#ifdef _MSC_VER
+/*
+ * Old versions (e.g. VS2010) of MSC have stdint.h but not the C99 header
+ * inttypes.h.  Work around this by defining the PRI* macros ourselves.
+ */
+# define PRIu8  "hhu"
+# define PRIu16 "hu"
+# define PRIu32 "u"
+# define PRIu64 "llu"
+# define PRIi8  "hhi"
+# define PRIi16 "hi"
+# define PRIi32 "i"
+# define PRIi64 "lli"
+# define PRIx8  "hhx"
+# define PRIx16 "hx"
+# define PRIx32 "x"
+# define PRIx64 "llx"
+#else
+# include <inttypes.h>
 #endif
 
 #ifdef _WIN32
@@ -123,7 +80,6 @@
  * get full Unicode support on Windows...
  */
 
-#include <io.h>
 #include <wchar.h>
 int wmain(int argc, wchar_t **argv);
 #  define	tmain		wmain
@@ -181,11 +137,9 @@ int wmain(int argc, wchar_t **argv);
 #endif /* !_WIN32 */
 
 extern const tchar *prog_invocation_name;
-extern bool suppress_warnings;
 
 void _printf(1, 2) msg(const char *fmt, ...);
 void _printf(1, 2) msg_errno(const char *fmt, ...);
-void _printf(1, 2) warn(const char *fmt, ...);
 
 void *xmalloc(size_t size);
 
