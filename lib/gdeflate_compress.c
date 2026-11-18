@@ -242,5 +242,8 @@ libdeflate_gdeflate_compress_bound(struct libdeflate_compressor *c,
 	if (out_npages)
 		*out_npages = npages;
 
-	return (page_bound + (NUM_STREAMS * BITS_PER_PACKET) / 8) * npages;
+	/* HIDE_INTERFACE suppresses deflate_compress.c's #ifdef GDEFLATE bound,
+	 * so page_bound comes from the non-GDeflate build and omits the
+	 * 2 * (NUM_STREAMS * BITS_PER_PACKET) / 8 stream-interleaving slack. */
+	return (page_bound + 3 * (NUM_STREAMS * BITS_PER_PACKET) / 8) * npages;
 }
