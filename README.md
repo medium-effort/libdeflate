@@ -1,3 +1,5 @@
+> **Note:** This is a fork of [ebiggers/libdeflate](https://github.com/ebiggers/libdeflate) with NVIDIA GDeflate compression and decompression support (derived from [NVIDIA/GDeflate](https://github.com/NVIDIA/GDeflate), Apache-2.0) for [godot-directstorage-extension](https://github.com/medium-effort/godot-directstorage-extension).
+
 # Overview
 
 libdeflate is a library for fast, whole-buffer DEFLATE-based compression and

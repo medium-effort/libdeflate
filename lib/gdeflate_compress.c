@@ -28,6 +28,9 @@
  *
  * SPDX-FileCopyrightText: Copyright (c) 2020, 2021, 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by MediumEffort in 2026: updated libdeflate_gdeflate_compress_bound()
+ * to include stream-interleaving slack when HIDE_INTERFACE is defined.
  */
 
 #define WITH_GDEFLATE
